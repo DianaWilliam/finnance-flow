@@ -105,7 +105,7 @@ O deploy automático injeta sua URL de forma segura! ✅
 
 #### Opção B: Deploy Manual
 
-Veja outras opções em **[DEPLOY.md](DEPLOY.md)**
+Veja outras opções em **[DEPLOY.md](DEPLOY.md)** 
 
 ### 6️⃣ Atualize o CORS
 
