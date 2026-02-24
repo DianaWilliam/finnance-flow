@@ -1,0 +1,1461 @@
+// ==========================================
+// FinnanceFlow - Google Apps Script Backend
+// ==========================================
+// 
+// 📋 INSTRUÇÕES DE CONFIGURAÇÃO:
+// 1. Copie este arquivo para "Code.gs" no seu Google Apps Script
+// 2. Configure os usuários e senhas em CONFIG.USERS
+// 3. Atualize ALLOWED_ORIGINS com seu domínio do GitHub Pages
+// 4. Implante como Web App com acesso "Qualquer pessoa"
+//
+// ⚠️ IMPORTANTE: Nunca commite o arquivo Code.gs real com suas credenciais!
+// ==========================================
+
+// Configuration
+const CONFIG = {
+  SHEET_NAME: "Transacoes",
+  TOKEN_SHEET: "Tokens",
+  CARDS_SHEET: "Cartoes",
+  INVOICES_SHEET: "Faturas",
+  
+  // ==========================================
+  // 🔐 CONFIGURE SEUS USUÁRIOS AQUI
+  // ==========================================
+  // Substitua com seus nomes de usuário e senhas reais
+  USERS: {
+    usuario1: "sua-senha-segura-aqui",  // ⚠️ ALTERE ISSO!
+    usuario2: "sua-senha-segura-aqui",  // ⚠️ ALTERE ISSO!
+  },
+  
+  // Token expiration in milliseconds (72 hours)
+  TOKEN_EXPIRATION: 72 * 60 * 60 * 1000,
+  
+  // ==========================================
+  // 🌐 CONFIGURE SUAS ORIGENS PERMITIDAS
+  // ==========================================
+  // Adicione seu domínio do GitHub Pages aqui
+  ALLOWED_ORIGINS: [
+    // Desenvolvimento local
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+    "http://127.0.0.1:8080",
+    "http://localhost:8080",
+    "http://127.0.0.1",
+    "http://localhost",
+    "https://127.0.0.1:5500",
+    "https://localhost:5500",
+    
+    // ⚠️ SUBSTITUA com seu domínio real do GitHub Pages
+    // Exemplo: "https://seu-usuario.github.io",
+    "https://seu-usuario.github.io",
+  ],
+};
+
+// ==========================================
+// Main Handler
+// ==========================================
+
+function doGet(e) {
+  const output = ContentService.createTextOutput(
+    JSON.stringify({
+      status: "FinnanceFlow API is running",
+      version: "1.0.0",
+    })
+  ).setMimeType(ContentService.MimeType.JSON);
+
+  // Enable CORS
+  return output;
+}
+
+// Handle CORS preflight requests (OPTIONS method)
+function doOptions(e) {
+  return ContentService.createTextOutput("")
+    .setMimeType(ContentService.MimeType.TEXT)
+    .setHeader("Access-Control-Allow-Origin", "*")
+    .setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+    .setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+    .setHeader("Access-Control-Max-Age", "86400");
+}
+
+function doPost(e) {
+  try {
+    const origin = e.parameter.origin || (e.headers && e.headers.origin);
+
+    // Log for debugging
+    Logger.log("Request Origin: " + origin);
+
+    const data = JSON.parse(e.postData.contents);
+    const action = e.parameter.action;
+
+    // Route to appropriate handler
+    switch (action) {
+      case "login":
+        return handleLogin(data);
+
+      case "validateToken":
+        // Validate token for validateToken action
+        if (!validateToken(data.token)) {
+          return createResponse({ valid: false });
+        }
+        return createResponse({ valid: true });
+
+      case "getTransactions":
+      case "getTransaction":
+      case "createTransaction":
+      case "updateTransaction":
+      case "deleteTransaction":
+      case "markAsPaid":
+      case "getSummary":
+      case "getCards":
+      case "createCard":
+      case "updateCard":
+      case "deleteCard":
+      case "getInvoices":
+      case "createInvoice":
+      case "updateInvoice":
+      case "deleteInvoice":
+      case "closeInvoice":
+        // Validate token for protected routes
+        const username = validateTokenAndGetUser(data.token);
+        if (!username) {
+          return createResponse({ error: "Invalid token" }, 401);
+        }
+
+        // Add username to data for access control
+        data.currentUser = username;
+
+        // Execute the appropriate action
+        if (action === "getTransactions") return getTransactions(data);
+        if (action === "getTransaction") return getTransaction(data);
+        if (action === "createTransaction") return createTransaction(data);
+        if (action === "updateTransaction") return updateTransaction(data);
+        if (action === "deleteTransaction") return deleteTransaction(data);
+        if (action === "markAsPaid") return markAsPaid(data);
+        if (action === "getSummary") return getSummary(data);
+        if (action === "getCards") return getCards(data);
+        if (action === "createCard") return createCard(data);
+        if (action === "updateCard") return updateCard(data);
+        if (action === "deleteCard") return deleteCard(data);
+        if (action === "getInvoices") return getInvoices(data);
+        if (action === "createInvoice") return createInvoice(data);
+        if (action === "updateInvoice") return updateInvoice(data);
+        if (action === "deleteInvoice") return deleteInvoice(data);
+        if (action === "closeInvoice") return closeInvoice(data);
+        break;
+
+      default:
+        return createResponse({ error: "Invalid action" }, 400);
+    }
+  } catch (error) {
+    Logger.log("Error: " + error.toString());
+    return createResponse({ error: error.toString() }, 500);
+  }
+}
+
+// ==========================================
+// Authentication
+// ==========================================
+
+function handleLogin(data) {
+  const username = data.username;
+  const password = data.password;
+
+  // Validate credentials
+  if (!CONFIG.USERS[username] || CONFIG.USERS[username] !== password) {
+    return createResponse(
+      {
+        success: false,
+        error: "Usuário ou senha inválidos",
+      },
+      401
+    );
+  }
+
+  // Generate token
+  const token = generateToken(username);
+
+  // Save token
+  saveToken(token, username);
+
+  // Get all usernames for the system
+  const allUsers = Object.keys(CONFIG.USERS);
+
+  return createResponse({
+    success: true,
+    token: token,
+    userData: {
+      username: username,
+      person: username,
+      allUsers: allUsers, // Send all registered users
+    },
+  });
+}
+
+function validateToken(token) {
+  if (!token) return false;
+
+  const tokenSheet = getTokenSheet();
+  const lastRow = tokenSheet.getLastRow();
+
+  if (lastRow < 2) return false;
+
+  const tokens = tokenSheet.getRange(2, 1, lastRow - 1, 3).getValues();
+
+  for (let i = 0; i < tokens.length; i++) {
+    const [storedToken, username, expiration] = tokens[i];
+
+    if (storedToken === token) {
+      // Check if token is expired
+      if (new Date() > new Date(expiration)) {
+        // Token expired, delete it
+        tokenSheet.deleteRow(i + 2);
+        return false;
+      }
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function validateTokenAndGetUser(token) {
+  if (!token) return null;
+
+  const tokenSheet = getTokenSheet();
+  const lastRow = tokenSheet.getLastRow();
+
+  if (lastRow < 2) return null;
+
+  const tokens = tokenSheet.getRange(2, 1, lastRow - 1, 3).getValues();
+
+  for (let i = 0; i < tokens.length; i++) {
+    const [storedToken, username, expiration] = tokens[i];
+
+    if (storedToken === token) {
+      // Check if token is expired
+      if (new Date() > new Date(expiration)) {
+        // Token expired, delete it
+        tokenSheet.deleteRow(i + 2);
+        return null;
+      }
+      return username;
+    }
+  }
+
+  return null;
+}
+
+function generateToken(username) {
+  const timestamp = new Date().getTime();
+  const random = Math.random().toString(36).substring(2, 15);
+  return `${username}_${timestamp}_${random}`;
+}
+
+function saveToken(token, username) {
+  const tokenSheet = getTokenSheet();
+  const expiration = new Date(new Date().getTime() + CONFIG.TOKEN_EXPIRATION);
+
+  // Clean expired tokens
+  cleanExpiredTokens(tokenSheet);
+
+  // Save new token
+  tokenSheet.appendRow([token, username, expiration]);
+}
+
+function cleanExpiredTokens(tokenSheet) {
+  const lastRow = tokenSheet.getLastRow();
+
+  if (lastRow < 2) return;
+
+  const tokens = tokenSheet.getRange(2, 1, lastRow - 1, 3).getValues();
+  const now = new Date();
+
+  // Delete from bottom to top to avoid index issues
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const expiration = new Date(tokens[i][2]);
+    if (now > expiration) {
+      tokenSheet.deleteRow(i + 2);
+    }
+  }
+}
+
+function getTokenSheet() {
+  const ss = getSpreadsheet();
+  let sheet = ss.getSheetByName(CONFIG.TOKEN_SHEET);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG.TOKEN_SHEET);
+    sheet.getRange(1, 1, 1, 3).setValues([["Token", "Username", "Expiration"]]);
+    sheet.getRange(1, 1, 1, 3).setFontWeight("bold");
+    sheet.setFrozenRows(1);
+  }
+
+  return sheet;
+}
+
+// ==========================================
+// Spreadsheet Helpers
+// ==========================================
+
+function getSpreadsheet() {
+  return SpreadsheetApp.getActiveSpreadsheet();
+}
+
+function getSheet(sheetName = CONFIG.SHEET_NAME) {
+  const ss = getSpreadsheet();
+  let sheet = ss.getSheetByName(sheetName);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    initializeSheet(sheet);
+  }
+
+  return sheet;
+}
+
+function initializeSheet(sheet) {
+  // Set headers
+  const headers = [
+    "ID",
+    "Descrição",
+    "Valor",
+    "Tipo",
+    "Pessoa",
+    "Categoria",
+    "Data Vencimento",
+    "Status",
+    "Observações",
+    "Recorrente",
+    "Data Criação",
+    "Data Atualização",
+    "ID Cartão",
+    "Parcela Atual",
+    "Total Parcelas",
+    "É Transferência",
+    "Tipo Cartão",
+    "ID Fatura",
+  ];
+
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  sheet.getRange(1, 1, 1, headers.length).setFontWeight("bold");
+  sheet.setFrozenRows(1);
+}
+
+// ==========================================
+// CRUD Operations
+// ==========================================
+
+function getTransactions(data) {
+  const sheet = getSheet();
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    return createResponse({
+      transactions: [],
+      month: data.month || new Date().getMonth() + 1,
+      year: data.year || new Date().getFullYear(),
+    });
+  }
+
+  const range = sheet.getRange(2, 1, lastRow - 1, 18);
+  const values = range.getValues();
+
+  let transactions = values
+    .map((row) => ({
+      id: row[0],
+      description: row[1],
+      amount: row[2],
+      type: row[3],
+      person: row[4],
+      category: row[5],
+      dueDate: formatDate(row[6]),
+      status: row[7],
+      notes: row[8],
+      isRecurring: row[9] || false,
+      createdAt: row[10],
+      updatedAt: row[11],
+      cardId: row[12] || null,
+      currentInstallment: row[13] || null,
+      totalInstallments: row[14] || null,
+      isTransfer: row[15] || false,
+      cardTransactionType: row[16] || null,
+      invoiceId: row[17] || null,
+    }))
+    .filter((t) => t.id); // Filter out empty rows
+
+  // Apply month/year filter (default to current month/year)
+  const filterMonth = data.month || new Date().getMonth() + 1;
+  const filterYear = data.year || new Date().getFullYear();
+
+  transactions = transactions.filter((t) => {
+    if (!t.dueDate) return false;
+    const date = new Date(t.dueDate);
+    return (
+      date.getMonth() + 1 === filterMonth && date.getFullYear() === filterYear
+    );
+  });
+
+  // Apply user access control and view filter
+  const currentUser = data.currentUser;
+
+  if (data.view === "geral") {
+    // Show only shared transactions
+    transactions = transactions.filter((t) => t.person === "shared");
+  } else if (data.view === currentUser || !data.view) {
+    // Show only user's own transactions (NOT shared)
+    transactions = transactions.filter((t) => t.person === currentUser);
+  } else {
+    // User trying to view someone else's data - return empty
+    transactions = [];
+  }
+
+  return createResponse({
+    transactions,
+    month: filterMonth,
+    year: filterYear,
+  });
+}
+
+function getTransaction(data) {
+  const sheet = getSheet();
+  const row = findRowById(sheet, data.id);
+
+  if (row === -1) {
+    return createResponse({ error: "Transaction not found" }, 404);
+  }
+
+  const values = sheet.getRange(row, 1, 1, 18).getValues()[0];
+
+  const transaction = {
+    id: values[0],
+    description: values[1],
+    amount: values[2],
+    type: values[3],
+    person: values[4],
+    category: values[5],
+    dueDate: formatDate(values[6]),
+    status: values[7],
+    notes: values[8],
+    isRecurring: values[9] || false,
+    createdAt: values[10],
+    updatedAt: values[11],
+    cardId: values[12] || null,
+    currentInstallment: values[13] || null,
+    totalInstallments: values[14] || null,
+    isTransfer: values[15] || false,
+    cardTransactionType: values[16] || null,
+    invoiceId: values[17] || null,
+  };
+
+  return createResponse({ transaction });
+}
+
+function createTransaction(data) {
+  // Check if this is an installment purchase
+  if (data.installments && data.installments > 1 && data.cardId) {
+    // Get card information
+    const cardsSheet = getCardsSheet();
+    const cardRow = findRowById(cardsSheet, data.cardId);
+
+    if (cardRow === -1) {
+      return createResponse({ error: "Card not found" }, 404);
+    }
+
+    const cardValues = cardsSheet.getRange(cardRow, 1, 1, 6).getValues()[0];
+    const card = {
+      id: cardValues[0],
+      name: cardValues[1],
+      dueDay: cardValues[2],
+      closingDay: cardValues[3],
+    };
+
+    // Create installment transactions
+    const createdIds = createInstallmentTransactions(data, card);
+
+    return createResponse({
+      success: true,
+      ids: createdIds,
+      message: `${data.installments} parcelas criadas com sucesso`,
+    });
+  }
+
+  // Regular transaction (not installment)
+  const sheet = getSheet();
+  const id = generateId();
+  const now = new Date();
+  const isRecurring = data.isRecurring || false;
+
+  // Handle card transactions (credit card - needs invoice assignment)
+  let invoiceId = data.invoiceId || null;
+  if (data.type === "cartao" && data.cardId && data.cardTransactionType === "credit") {
+    // Get card information
+    const cardsSheet = getCardsSheet();
+    const cardRow = findRowById(cardsSheet, data.cardId);
+
+    if (cardRow !== -1) {
+      const cardValues = cardsSheet.getRange(cardRow, 1, 1, 6).getValues()[0];
+      const card = {
+        id: cardValues[0],
+        closingDay: cardValues[3],
+        dueDay: cardValues[2],
+      };
+
+      // Determine which invoice this purchase belongs to
+      const purchaseDate = new Date(data.dueDate);
+      const purchaseDay = purchaseDate.getDate();
+      const purchaseMonth = purchaseDate.getMonth() + 1;
+      const purchaseYear = purchaseDate.getFullYear();
+
+      let targetMonth = purchaseMonth;
+      let targetYear = purchaseYear;
+
+      // If purchase is after closing day, it goes to next month's invoice
+      if (purchaseDay > card.closingDay) {
+        targetMonth += 1;
+        if (targetMonth > 12) {
+          targetMonth = 1;
+          targetYear += 1;
+        }
+      }
+
+      // Find or create invoice for target month/year
+      invoiceId = findOrCreateInvoice(
+        card.id,
+        targetMonth,
+        targetYear,
+        card.closingDay,
+        card.dueDay
+      );
+    }
+  }
+
+  const row = [
+    id,
+    data.description,
+    data.amount,
+    data.type,
+    data.person,
+    data.category || "outros",
+    new Date(data.dueDate),
+    data.status || "pending",
+    data.notes || "",
+    isRecurring,
+    now,
+    now,
+    data.cardId || null, // cardId
+    null, // currentInstallment
+    null, // totalInstallments
+    false, // isTransfer
+    data.cardTransactionType || null, // debit or credit
+    invoiceId, // invoiceId (auto-assigned for credit cards)
+  ];
+
+  sheet.appendRow(row);
+
+  // Update invoice total if card transaction was linked to invoice
+  if (invoiceId && data.type === "cartao" && data.cardTransactionType === "credit") {
+    updateInvoice({ id: invoiceId });
+  }
+
+  // Check if category is a user name (transfer between users)
+  const categoryLower = (data.category || "").toLowerCase();
+  const userNames = Object.keys(CONFIG.USERS).map((u) => u.toLowerCase());
+
+  if (data.type === "expense" && userNames.includes(categoryLower)) {
+    // This is a transfer! Mark original as transfer and change type
+    sheet.getRange(sheet.getLastRow(), 4).setValue("transfer"); // Change type to transfer
+    sheet.getRange(sheet.getLastRow(), 16).setValue(true); // Mark as transfer
+    
+    // Create reciprocal transfer transaction for the receiver
+    const receiverName =
+      categoryLower.charAt(0).toUpperCase() + categoryLower.slice(1);
+    const reciprocalId = generateId();
+
+    const reciprocalRow = [
+      reciprocalId,
+      `Transferência de ${data.person}`, // Description shows who sent it
+      data.amount,
+      "transfer", // Type is transfer, not income
+      receiverName.toLowerCase(), // Person is the receiver
+      "particular", // Category
+      new Date(data.dueDate),
+      data.status || "pending", // Same status as original
+      `Origem: ${data.description}`, // Notes reference original transaction
+      false, // Not recurring
+      now,
+      now,
+      null, // cardId
+      null, // currentInstallment
+      null, // totalInstallments
+      true, // isTransfer
+      null, // cardTransactionType
+      null, // invoiceId
+    ];
+
+    sheet.appendRow(reciprocalRow);
+  }
+
+  // If recurring, create next month's transaction automatically
+  if (isRecurring) {
+    createNextRecurringTransaction(data, sheet);
+  }
+
+  return createResponse({
+    success: true,
+    id: id,
+    message: isRecurring
+      ? "Transação recorrente criada com sucesso"
+      : "Transaction created successfully",
+  });
+}
+
+function updateTransaction(data) {
+  const sheet = getSheet();
+  const row = findRowById(sheet, data.id);
+
+  if (row === -1) {
+    return createResponse({ error: "Transaction not found" }, 404);
+  }
+
+  const now = new Date();
+
+  const updates = [
+    data.id,
+    data.description,
+    data.amount,
+    data.type,
+    data.person,
+    data.category || "outros",
+    new Date(data.dueDate),
+    data.status || "pending",
+    data.notes || "",
+    data.isRecurring || false,
+    sheet.getRange(row, 11).getValue(), // Keep original createdAt
+    now,
+    sheet.getRange(row, 13).getValue() || null, // Keep cardId
+    sheet.getRange(row, 14).getValue() || null, // Keep currentInstallment
+    sheet.getRange(row, 15).getValue() || null, // Keep totalInstallments
+    sheet.getRange(row, 16).getValue() || false, // Keep isTransfer
+    data.cardTransactionType || sheet.getRange(row, 17).getValue() || null, // Update or keep cardTransactionType
+    data.invoiceId || sheet.getRange(row, 18).getValue() || null, // Update or keep invoiceId
+  ];
+
+  sheet.getRange(row, 1, 1, 18).setValues([updates]);
+
+  return createResponse({
+    success: true,
+    message: "Transaction updated successfully",
+  });
+}
+
+function deleteTransaction(data) {
+  const sheet = getSheet();
+  const row = findRowById(sheet, data.id);
+
+  if (row === -1) {
+    return createResponse({ error: "Transaction not found" }, 404);
+  }
+
+  sheet.deleteRow(row);
+
+  return createResponse({
+    success: true,
+    message: "Transaction deleted successfully",
+  });
+}
+
+function markAsPaid(data) {
+  const sheet = getSheet();
+  const row = findRowById(sheet, data.id);
+
+  if (row === -1) {
+    return createResponse({ error: "Transaction not found" }, 404);
+  }
+
+  const isRecurring = sheet.getRange(row, 10).getValue();
+
+  sheet.getRange(row, 8).setValue("paid"); // Status column
+  sheet.getRange(row, 12).setValue(new Date()); // Updated at
+
+  // If recurring, create next month's transaction
+  if (isRecurring) {
+    const values = sheet.getRange(row, 1, 1, 12).getValues()[0];
+    const nextMonthData = {
+      description: values[1],
+      amount: values[2],
+      type: values[3],
+      person: values[4],
+      category: values[5],
+      dueDate: getNextMonthDate(values[6]),
+      status: "pending",
+      notes: values[8],
+      isRecurring: true,
+    };
+    createTransaction(nextMonthData);
+  }
+
+  return createResponse({
+    success: true,
+    message: isRecurring
+      ? "Transação paga e próxima recorrência criada"
+      : "Transaction marked as paid",
+  });
+}
+
+// ==========================================
+// Summary/Statistics
+// ==========================================
+
+function getSummary(data) {
+  const sheet = getSheet();
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    return createResponse({
+      totalIncome: 0,
+      totalExpense: 0,
+      totalPending: 0,
+      balance: 0,
+    });
+  }
+
+  const range = sheet.getRange(2, 1, lastRow - 1, 18);
+  const values = range.getValues();
+
+  // Apply month/year filter (default to current month/year)
+  const filterMonth = data.month || new Date().getMonth() + 1;
+  const filterYear = data.year || new Date().getFullYear();
+
+  let transactions = values
+    .map((row) => ({
+      amount: row[2],
+      type: row[3],
+      person: row[4],
+      dueDate: row[6],
+      status: row[7],
+      isTransfer: row[15] || false,
+      cardTransactionType: row[16] || null,
+    }))
+    .filter((t) => {
+      if (!t.amount) return false;
+      if (!t.dueDate) return false;
+      const date = new Date(t.dueDate);
+      return (
+        date.getMonth() + 1 === filterMonth && date.getFullYear() === filterYear
+      );
+    });
+
+  // Apply view filter
+  const currentUser = data.currentUser;
+
+  if (data.view === "geral") {
+    // Show only shared transactions
+    transactions = transactions.filter((t) => t.person === "shared");
+  } else if (data.view === currentUser || !data.view) {
+    // Show only user's own transactions (NOT shared)
+    transactions = transactions.filter((t) => t.person === currentUser);
+  } else {
+    // User trying to view someone else's data - return empty
+    transactions = [];
+  }
+
+  const summary = {
+    totalIncome: 0,
+    totalExpense: 0,
+    totalPending: 0,
+    totalCard: 0,
+    totalSavings: 0,
+  };
+
+  transactions.forEach((t) => {
+    // Transferências: não contam como receita/despesa, apenas ajustam saldo
+    if (t.isTransfer || t.type === "transfer") {
+      return;
+    }
+
+    // CARTÃO
+    if (t.type === "cartao") {
+      // DÉBITO: diminui do saldo (como despesa normal), NÃO aparece em totalCard
+      // Mas APENAS se estiver pago (débito é pago na hora)
+      if (t.cardTransactionType === "debit" && t.status === "paid") {
+        summary.totalExpense += t.amount;
+      }
+      
+      // Pendentes no débito contam como pendente
+      if (t.cardTransactionType === "debit" && t.status === "pending") {
+        summary.totalPending += t.amount;
+      }
+      
+      // CRÉDITO: não afeta o saldo, APENAS aparece em totalCard
+      if (t.cardTransactionType === "credit") {
+        summary.totalCard += t.amount;
+      }
+
+      return;
+    }    // Caixinha: adiciona ao guardado
+    if (t.type === "caixinha") {
+      summary.totalSavings += t.amount;
+      return;
+    }
+
+    // Retirada da caixinha: subtrai do guardado
+    if (t.type === "retirada-caixinha") {
+      summary.totalSavings -= t.amount;
+      return;
+    }
+
+    // Transações normais (income/expense)
+    if (t.type === "income") {
+      summary.totalIncome += t.amount;
+    } else if (t.type === "expense") {
+      // APENAS despesas PAGAS diminuem do saldo
+      if (t.status === "paid") {
+        summary.totalExpense += t.amount;
+      }
+    }
+
+    // Todas as pendentes (exceto crédito) contam em totalPending
+    if (t.status === "pending") {
+      summary.totalPending += t.amount;
+    }
+  });
+
+  summary.balance = summary.totalIncome - summary.totalExpense;
+
+  return createResponse(summary);
+}
+
+// ==========================================
+// Helper Functions
+// ==========================================
+
+function findRowById(sheet, id) {
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    return -1;
+  }
+
+  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+
+  for (let i = 0; i < ids.length; i++) {
+    if (ids[i][0] === id) {
+      return i + 2; // +2 because array is 0-indexed and row 1 is header
+    }
+  }
+
+  return -1;
+}
+
+function createNextRecurringTransaction(data, sheet) {
+  const nextId = generateId();
+  const now = new Date();
+  const nextDueDate = getNextMonthDate(data.dueDate);
+
+  const row = [
+    nextId,
+    data.description,
+    data.amount,
+    data.type,
+    data.person,
+    data.category || "outros",
+    nextDueDate,
+    "pending",
+    data.notes || "",
+    true, // isRecurring
+    now,
+    now,
+  ];
+
+  sheet.appendRow(row);
+}
+
+function getNextMonthDate(currentDate) {
+  const date = new Date(currentDate);
+  const nextMonth = new Date(
+    date.getFullYear(),
+    date.getMonth() + 1,
+    date.getDate()
+  );
+
+  // Handle cases where the day doesn't exist in next month (e.g., Jan 31 -> Feb 28)
+  if (nextMonth.getDate() !== date.getDate()) {
+    nextMonth.setDate(0); // Set to last day of previous month
+  }
+
+  return nextMonth;
+}
+
+function generateId() {
+  return (
+    "TXN_" +
+    new Date().getTime() +
+    "_" +
+    Math.random().toString(36).substr(2, 9)
+  );
+}
+
+function formatDate(date) {
+  if (!date) return "";
+
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+// ==========================================
+// CORS Helpers
+// ==========================================
+
+function isOriginAllowed(origin) {
+  if (!origin) return true; // Allow if no origin specified
+
+  // Check exact match
+  if (CONFIG.ALLOWED_ORIGINS.includes(origin)) {
+    return true;
+  }
+
+  // Check if origin matches pattern (for GitHub Pages subdomains)
+  for (const allowedOrigin of CONFIG.ALLOWED_ORIGINS) {
+    if (allowedOrigin.includes("github.io")) {
+      // Allow any GitHub Pages subdomain
+      if (origin.includes("github.io")) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function createResponse(data, status = 200) {
+  const jsonOutput = JSON.stringify(data);
+  const output = ContentService.createTextOutput(jsonOutput);
+
+  // Set CORS headers to allow localhost and Live Server
+  output.setMimeType(ContentService.MimeType.JSON);
+
+  // Note: Apps Script doesn't support custom headers in Web Apps
+  // But deploying as "Anyone" should allow cross-origin requests
+  return output;
+}
+
+// ==========================================
+// Credit Cards Management
+// ==========================================
+
+function getCardsSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(CONFIG.CARDS_SHEET);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG.CARDS_SHEET);
+    // Setup headers
+    sheet
+      .getRange(1, 1, 1, 6)
+      .setValues([
+        [
+          "ID",
+          "Nome",
+          "Dia Vencimento",
+          "Dia Fechamento",
+          "Criado Em",
+          "Atualizado Em",
+        ],
+      ]);
+    sheet.getRange(1, 1, 1, 6).setFontWeight("bold");
+  }
+
+  return sheet;
+}
+
+function getCards(data) {
+  const sheet = getCardsSheet();
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    return createResponse({ cards: [] });
+  }
+
+  const range = sheet.getRange(2, 1, lastRow - 1, 6);
+  const values = range.getValues();
+
+  const cards = values
+    .map((row) => ({
+      id: row[0],
+      name: row[1],
+      dueDay: row[2],
+      closingDay: row[3],
+      createdAt: row[4],
+      updatedAt: row[5],
+    }))
+    .filter((c) => c.id);
+
+  return createResponse({ cards });
+}
+
+function createCard(data) {
+  const sheet = getCardsSheet();
+  const id = Utilities.getUuid();
+  const now = new Date().toISOString();
+
+  sheet.appendRow([id, data.name, data.dueDay, data.closingDay, now, now]);
+
+  return createResponse({
+    success: true,
+    card: {
+      id,
+      name: data.name,
+      dueDay: data.dueDay,
+      closingDay: data.closingDay,
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+}
+
+function updateCard(data) {
+  const sheet = getCardsSheet();
+  const row = findRowById(sheet, data.id);
+
+  if (row === -1) {
+    return createResponse({ error: "Card not found" }, 404);
+  }
+
+  const now = new Date().toISOString();
+
+  sheet
+    .getRange(row, 2, 1, 5)
+    .setValues([
+      [
+        data.name,
+        data.dueDay,
+        data.closingDay,
+        sheet.getRange(row, 5).getValue(),
+        now,
+      ],
+    ]);
+
+  return createResponse({
+    success: true,
+    message: "Card updated successfully",
+  });
+}
+
+function deleteCard(data) {
+  const sheet = getCardsSheet();
+  const row = findRowById(sheet, data.id);
+
+  if (row === -1) {
+    return createResponse({ error: "Card not found" }, 404);
+  }
+
+  sheet.deleteRow(row);
+  return createResponse({
+    success: true,
+    message: "Card deleted successfully",
+  });
+}
+
+// ==========================================
+// Invoice Management
+// ==========================================
+
+function getInvoicesSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(CONFIG.INVOICES_SHEET);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG.INVOICES_SHEET);
+    sheet
+      .getRange(1, 1, 1, 9)
+      .setValues([
+        [
+          "ID",
+          "ID Cartão",
+          "Mês Referência",
+          "Ano Referência",
+          "Data Fechamento",
+          "Data Vencimento",
+          "Valor Total",
+          "Status",
+          "Data Criação",
+        ],
+      ]);
+    sheet.getRange(1, 1, 1, 9).setFontWeight("bold");
+  }
+
+  return sheet;
+}
+
+function getInvoices(data) {
+  const sheet = getInvoicesSheet();
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    return createResponse({ invoices: [] });
+  }
+
+  const range = sheet.getRange(2, 1, lastRow - 1, 9);
+  const values = range.getValues();
+
+  let invoices = values
+    .map((row) => ({
+      id: row[0],
+      cardId: row[1],
+      month: row[2],
+      year: row[3],
+      closingDate: formatDate(row[4]),
+      dueDate: formatDate(row[5]),
+      totalAmount: row[6],
+      status: row[7],
+      createdAt: row[8],
+    }))
+    .filter((i) => i.id);
+
+  // Filter by card if specified
+  if (data.cardId) {
+    invoices = invoices.filter((i) => i.cardId === data.cardId);
+  }
+
+  // Filter by month/year if specified
+  if (data.month && data.year) {
+    invoices = invoices.filter(
+      (i) => i.month === data.month && i.year === data.year
+    );
+  }
+
+  return createResponse({ invoices });
+}
+
+function createInvoice(data) {
+  const sheet = getInvoicesSheet();
+  const id = Utilities.getUuid();
+  const now = new Date().toISOString();
+
+  // Get card info to validate
+  const cardsSheet = getCardsSheet();
+  const cardRow = findRowById(cardsSheet, data.cardId);
+
+  if (cardRow === -1) {
+    return createResponse({ error: "Card not found" }, 404);
+  }
+
+  const cardValues = cardsSheet.getRange(cardRow, 1, 1, 6).getValues()[0];
+  const card = {
+    dueDay: cardValues[2],
+    closingDay: cardValues[3],
+  };
+
+  // Calculate closing and due dates based on card settings
+  const closingDate = new Date(data.year, data.month - 1, card.closingDay);
+  const dueDate = new Date(data.year, data.month - 1, card.dueDay);
+
+  sheet.appendRow([
+    id,
+    data.cardId,
+    data.month,
+    data.year,
+    closingDate,
+    dueDate,
+    0, // Initial total amount
+    "open", // Status: open, closed, paid
+    now,
+  ]);
+
+  return createResponse({
+    success: true,
+    invoice: {
+      id,
+      cardId: data.cardId,
+      month: data.month,
+      year: data.year,
+      closingDate: formatDate(closingDate),
+      dueDate: formatDate(dueDate),
+      totalAmount: 0,
+      status: "open",
+      createdAt: now,
+    },
+  });
+}
+
+function updateInvoice(data) {
+  const sheet = getInvoicesSheet();
+  const row = findRowById(sheet, data.id);
+
+  if (row === -1) {
+    return createResponse({ error: "Invoice not found" }, 404);
+  }
+
+  // Recalculate total from transactions
+  const total = calculateInvoiceTotal(data.id);
+
+  sheet.getRange(row, 7).setValue(total); // Update total amount
+  if (data.status) {
+    sheet.getRange(row, 8).setValue(data.status); // Update status if provided
+  }
+
+  return createResponse({
+    success: true,
+    message: "Invoice updated successfully",
+  });
+}
+
+function deleteInvoice(data) {
+  const sheet = getInvoicesSheet();
+  const row = findRowById(sheet, data.id);
+
+  if (row === -1) {
+    return createResponse({ error: "Invoice not found" }, 404);
+  }
+
+  // Remove invoice reference from all transactions
+  const transactionsSheet = getSheet();
+  const lastRow = transactionsSheet.getLastRow();
+
+  if (lastRow >= 2) {
+    const invoiceIds = transactionsSheet
+      .getRange(2, 18, lastRow - 1, 1)
+      .getValues();
+
+    for (let i = 0; i < invoiceIds.length; i++) {
+      if (invoiceIds[i][0] === data.id) {
+        transactionsSheet.getRange(i + 2, 18).setValue(null);
+      }
+    }
+  }
+
+  sheet.deleteRow(row);
+
+  return createResponse({
+    success: true,
+    message: "Invoice deleted successfully",
+  });
+}
+
+function closeInvoice(data) {
+  const sheet = getInvoicesSheet();
+  const row = findRowById(sheet, data.id);
+
+  if (row === -1) {
+    return createResponse({ error: "Invoice not found" }, 404);
+  }
+
+  // Recalculate total
+  const total = calculateInvoiceTotal(data.id);
+
+  // Update invoice status
+  sheet.getRange(row, 7).setValue(total);
+  sheet.getRange(row, 8).setValue("closed");
+
+  // Mark all transactions associated with this invoice as PAID
+  const transactionsSheet = getSheet();
+  const lastRow = transactionsSheet.getLastRow();
+
+  if (lastRow >= 2) {
+    const transactionsData = transactionsSheet.getRange(2, 1, lastRow - 1, 18).getValues();
+    
+    for (let i = 0; i < transactionsData.length; i++) {
+      // Check if transaction belongs to this invoice (column 18 = invoiceId)
+      if (transactionsData[i][17] === data.id) {
+        // Update status to paid (column 8)
+        transactionsSheet.getRange(i + 2, 8).setValue("paid");
+      }
+    }
+  }
+
+  return createResponse({
+    success: true,
+    totalAmount: total,
+    message: "Invoice closed successfully",
+  });
+}
+
+function calculateInvoiceTotal(invoiceId) {
+  const sheet = getSheet();
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    return 0;
+  }
+
+  const data = sheet.getRange(2, 1, lastRow - 1, 18).getValues();
+  let total = 0;
+
+  data.forEach((row) => {
+    // Check if transaction belongs to this invoice (column 18 = invoiceId)
+    if (row[17] === invoiceId) {
+      total += row[2]; // Add amount (column 3)
+    }
+  });
+
+  return total;
+}
+
+// ==========================================
+// Installment Calculation
+// ==========================================
+
+/**
+ * Calculate the due date for an installment based on card's closing and due days
+ * @param {Date} purchaseDate - Date of purchase
+ * @param {number} closingDay - Day of month when card closes
+ * @param {number} dueDay - Day of month when invoice is due
+ * @param {number} installmentNumber - Which installment (0-based)
+ * @returns {string} Due date in YYYY-MM-DD format
+ */
+function calculateInstallmentDate(purchaseDate, closingDay, dueDay, installmentNumber) {
+  const date = new Date(purchaseDate);
+  const purchaseDay = date.getDate();
+
+  // Calculate months to add based on installment number
+  let monthsToAdd = installmentNumber;
+
+  // If purchase is after closing day, ALL installments start from next month's invoice
+  if (purchaseDay > closingDay) {
+    monthsToAdd += 1;
+  }
+
+  // Add months
+  date.setMonth(date.getMonth() + monthsToAdd);
+
+  // Set to invoice due day (not closing day)
+  date.setDate(dueDay);
+
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+/**
+ * Create installment transactions
+ * @param {object} data - Transaction data with installment info
+ * @param {object} card - Card data with closing day
+ * @returns {Array} Array of created transaction IDs
+ */
+function createInstallmentTransactions(data, card) {
+  const sheet = getSheet();
+  const installments = data.installments;
+  const amountPerInstallment = data.amount / installments;
+  const createdIds = [];
+  const invoicesSheet = getInvoicesSheet();
+  const invoicesCreated = new Set();
+
+  for (let i = 0; i < installments; i++) {
+    const id = Utilities.getUuid();
+    const now = new Date().toISOString();
+    const dueDate = calculateInstallmentDate(
+      data.dueDate,
+      card.closingDay,
+      card.dueDay,
+      i
+    );
+
+    // Parse due date to get month/year for invoice
+    const dueDateObj = new Date(dueDate);
+    const invoiceMonth = dueDateObj.getMonth() + 1;
+    const invoiceYear = dueDateObj.getFullYear();
+
+    // Create or find invoice for this month/year
+    let invoiceId = findOrCreateInvoice(
+      card.id,
+      invoiceMonth,
+      invoiceYear,
+      card.closingDay,
+      card.dueDay
+    );
+
+    // Add label: à vista for single payment, or installment number
+    let description;
+    if (installments === 1) {
+      description = `${data.description} (à vista)`;
+    } else {
+      description = `${data.description} (${i + 1}/${installments})`;
+    }
+
+    sheet.appendRow([
+      id,
+      description,
+      amountPerInstallment,
+      data.type,
+      data.person,
+      data.category || "",
+      dueDate,
+      data.status || "pending",
+      data.notes || "",
+      false, // isRecurring
+      now,
+      now,
+      card.id, // cardId
+      i + 1, // currentInstallment
+      installments, // totalInstallments
+      false, // isTransfer
+      data.cardTransactionType || "credit", // Default to credit for installments
+      invoiceId, // invoiceId
+    ]);
+
+    createdIds.push(id);
+    invoicesCreated.add(invoiceId);
+  }
+
+  // Update totals for all affected invoices
+  invoicesCreated.forEach((invoiceId) => {
+    updateInvoice({ id: invoiceId });
+  });
+
+  return createdIds;
+}
+
+/**
+ * Find existing invoice or create new one for specific month/year
+ * @param {string} cardId - Card ID
+ * @param {number} month - Month (1-12)
+ * @param {number} year - Year
+ * @param {number} closingDay - Card closing day
+ * @param {number} dueDay - Card due day
+ * @returns {string} Invoice ID
+ */
+function findOrCreateInvoice(cardId, month, year, closingDay, dueDay) {
+  const sheet = getInvoicesSheet();
+  const lastRow = sheet.getLastRow();
+
+  // Search for existing invoice
+  if (lastRow >= 2) {
+    const invoices = sheet.getRange(2, 1, lastRow - 1, 9).getValues();
+
+    for (let i = 0; i < invoices.length; i++) {
+      const invoice = invoices[i];
+      // Check if invoice exists for this card/month/year
+      if (
+        invoice[1] === cardId &&
+        invoice[2] === month &&
+        invoice[3] === year
+      ) {
+        return invoice[0]; // Return existing invoice ID
+      }
+    }
+  }
+
+  // Create new invoice if not found
+  const id = Utilities.getUuid();
+  const now = new Date().toISOString();
+  const closingDate = new Date(year, month - 1, closingDay);
+  const dueDate = new Date(year, month - 1, dueDay);
+
+  sheet.appendRow([
+    id,
+    cardId,
+    month,
+    year,
+    closingDate,
+    dueDate,
+    0, // Initial total amount
+    "open", // Status: open
+    now,
+  ]);
+
+  return id;
+}

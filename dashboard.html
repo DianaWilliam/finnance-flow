@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FinnanceFlow - Dashboard</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>💰</text></svg>"
+    />
+    <link rel="stylesheet" href="css/styles.css" />
+    <link rel="stylesheet" href="css/dashboard.css" />
+  </head>
+  <body>
+    <nav class="navbar">
+      <div class="nav-container">
+        <h1 class="nav-logo">💰 FinnanceFlow</h1>
+        <div style="display: flex; gap: 1rem; align-items: center">
+          <a href="cards.html" class="btn btn-secondary btn-sm">💳 Cartões</a>
+          <a href="invoices.html" class="btn btn-secondary btn-sm"
+            >📄 Faturas</a
+          >
+          <button id="logoutBtn" class="btn btn-secondary btn-sm">Sair</button>
+        </div>
+      </div>
+    </nav>
+
+    <main class="main-container">
+      <!-- View Selector -->
+      <div class="view-selector">
+        <button class="view-btn active" data-view="geral">Visão Geral</button>
+        <button class="view-btn" data-view="pessoa1">Pessoa 1</button>
+        <button class="view-btn" data-view="pessoa2">Pessoa 2</button>
+      </div>
+
+      <!-- Summary Cards -->
+      <div class="summary-grid">
+        <div class="summary-card card-income">
+          <div class="card-icon">💵</div>
+          <div class="card-content">
+            <h3>Receitas</h3>
+            <p class="card-value" id="totalIncome">R$ 0,00</p>
+          </div>
+        </div>
+
+        <div class="summary-card card-expense">
+          <div class="card-icon">💳</div>
+          <div class="card-content">
+            <h3>Despesas</h3>
+            <p class="card-value" id="totalExpense">R$ 0,00</p>
+          </div>
+        </div>
+
+        <div class="summary-card card-pending">
+          <div class="card-icon">⏰</div>
+          <div class="card-content">
+            <h3>Pendentes</h3>
+            <p class="card-value" id="totalPending">R$ 0,00</p>
+          </div>
+        </div>
+
+        <div class="summary-card card-balance">
+          <div class="card-icon">💰</div>
+          <div class="card-content">
+            <h3>Saldo</h3>
+            <p class="card-value" id="balance">R$ 0,00</p>
+          </div>
+        </div>
+
+        <div class="summary-card card-credit">
+          <div class="card-icon">💳</div>
+          <div class="card-content">
+            <h3>Cartão</h3>
+            <p class="card-value" id="totalCard">R$ 0,00</p>
+          </div>
+        </div>
+
+        <div class="summary-card card-savings">
+          <div class="card-icon">🐷</div>
+          <div class="card-content">
+            <h3>Guardado</h3>
+            <p class="card-value" id="totalSavings">R$ 0,00</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Month/Year Filter -->
+      <div class="filters"></div>
+
+      <!-- Action Buttons -->
+      <div class="action-buttons">
+        <button class="btn btn-success" id="addIncomeBtn">
+          <span>💰</span> Nova Receita
+        </button>
+        <button class="btn btn-primary" id="addExpenseBtn">
+          <span>➕</span> Nova Despesa
+        </button>
+        <button class="btn btn-secondary" id="addCardBtn">
+          <span>💳</span> Cartão
+        </button>
+        <button class="btn btn-info" id="addSavingsBtn">
+          <span>🐷</span> Guardar
+        </button>
+        <button class="btn btn-warning" id="withdrawSavingsBtn">
+          <span>📤</span> Retirar
+        </button>
+      </div>
+
+      <!-- Transactions List -->
+      <div class="transactions-section">
+        <div class="section-header">
+          <h2>Transações Recentes</h2>
+          <select id="filterStatus" class="filter-select">
+            <option value="all">Todas</option>
+            <option value="pending">Pendentes</option>
+            <option value="paid">Pagas</option>
+          </select>
+          <select id="filterType" class="filter-select">
+            <option value="all">Todos os Tipos</option>
+            <option value="income">Receitas</option>
+            <option value="expense">Despesas</option>
+            <option value="cartao">Cartão</option>
+            <option value="caixinha">Caixinha</option>
+            <option value="retirada-caixinha">Retirada</option>
+          </select>
+        </div>
+
+        <div id="transactionsList" class="transactions-list">
+          <div class="loading">Carregando...</div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Modal for Add/Edit Transaction -->
+    <div id="transactionModal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="modalTitle">Nova Transação</h2>
+          <button class="modal-close">&times;</button>
+        </div>
+
+        <form id="transactionForm">
+          <input type="hidden" id="transactionId" name="id" />
+
+          <div class="form-group">
+            <label for="description">Descrição *</label>
+            <input type="text" id="description" name="description" required />
+          </div>
+
+          <div class="form-group">
+            <label for="amount">Valor (R$) *</label>
+            <input
+              type="number"
+              id="amount"
+              name="amount"
+              step="0.01"
+              min="0"
+              required
+            />
+          </div>
+
+          <input type="hidden" id="type" name="type" value="expense" />
+
+          <div class="form-group" id="personGroup">
+            <label for="person">Responsável *</label>
+            <select id="person" name="person" required>
+              <option value="pessoa1">Pessoa 1</option>
+              <option value="pessoa2">Pessoa 2</option>
+              <option value="shared">Compartilhado</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="category">Categoria</label>
+            <select id="category" name="category">
+              <!-- Options will be populated dynamically based on type -->
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="dueDate">Data *</label>
+            <input type="date" id="dueDate" name="dueDate" required />
+          </div>
+
+          <div class="form-group" id="statusGroup">
+            <label for="status">Status *</label>
+            <select id="status" name="status" required>
+              <option value="pending">Pendente</option>
+              <option value="paid">Pago</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="notes">Observações</label>
+            <textarea id="notes" name="notes" rows="3"></textarea>
+          </div>
+
+          <!-- Installment Fields -->
+          <div id="installmentFields" style="display: none">
+            <div class="form-group">
+              <label for="cardTransactionType">Tipo de Transação *</label>
+              <select id="cardTransactionType" name="cardTransactionType">
+                <option value="debit">Débito (sai do saldo)</option>
+                <option value="credit">Crédito (vai para fatura)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="cardId">Cartão *</label>
+              <select id="cardId" name="cardId">
+                <option value="">Selecione um cartão</option>
+              </select>
+            </div>
+
+            <div
+              class="form-group"
+              id="invoiceSelectGroup"
+              style="display: none"
+            >
+              <label for="invoiceId">Fatura (opcional)</label>
+              <select id="invoiceId" name="invoiceId">
+                <option value="">Sem fatura associada</option>
+              </select>
+              <small class="form-help">
+                Vincule a compra a uma fatura existente (apenas para crédito)
+              </small>
+            </div>
+
+            <div class="form-group">
+              <label for="installments">Número de Parcelas *</label>
+              <input
+                type="number"
+                id="installments"
+                name="installments"
+                min="1"
+                max="48"
+                value="1"
+                placeholder="Ex: 12"
+              />
+              <small class="form-help">
+                Use 1 para compra à vista. O valor será dividido entre as
+                parcelas.
+              </small>
+            </div>
+          </div>
+
+          <div class="form-group" id="installmentCheckboxGroup">
+            <label class="checkbox-label">
+              <input type="checkbox" id="isInstallment" name="isInstallment" />
+              <span>💳 Compra parcelada no cartão</span>
+            </label>
+          </div>
+
+          <div class="form-group" id="recurringGroup">
+            <label class="checkbox-label">
+              <input type="checkbox" id="isRecurring" name="isRecurring" />
+              <span>Despesa recorrente (se repete todo mês)</span>
+            </label>
+            <small class="form-help">
+              ✨ Ao marcar como recorrente, uma nova transação será criada
+              automaticamente no próximo mês quando esta for paga.
+            </small>
+          </div>
+
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary modal-cancel">
+              Cancelar
+            </button>
+            <button type="submit" class="btn btn-primary">Salvar</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script src="js/config.js"></script>
+    <script src="js/monthFilter.js"></script>
+    <script src="js/auth.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/dashboard.js"></script>
+  </body>
+</html>
