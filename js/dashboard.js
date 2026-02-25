@@ -787,8 +787,6 @@ function populateCategories(type) {
     { value: "lazer", label: "Lazer" },
     { value: "educacao", label: "Educação" },
     { value: "parcela", label: "Parcela" },
-    { value: "henrique", label: "Henrique" },
-    { value: "juliana", label: "Juliana" },
     { value: "outros", label: "Outros" },
   ];
 
@@ -800,7 +798,8 @@ function populateCategories(type) {
     { value: "outros", label: "Outros" },
   ];
 
-  const categories = type === "expense" ? expenseCategories : incomeCategories;
+  const isExpense = ["expense", "cartao", "retirada-caixinha"].includes(type);
+  const categories = isExpense ? expenseCategories : incomeCategories;
 
   categorySelect.innerHTML = "";
   categories.forEach((cat) => {
